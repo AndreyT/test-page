@@ -2,17 +2,62 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>QR test page</title>
+  <title>Rental QR test</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: sans-serif; margin: 24px; line-height: 1.4; }
-    .warn { color: #b00020; font-weight: 600; }
-    pre { background: #f5f5f5; padding: 12px; border-radius: 8px; overflow: auto; }
+    body {
+      font-family: sans-serif;
+      margin: 24px;
+      line-height: 1.4;
+      color: #222;
+    }
+
+    h1 {
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+
+    .status {
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
+
+    .info {
+      color: #444;
+    }
+
+    .warn {
+      color: #b00020;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .ok {
+      color: #0a7a2f;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    pre {
+      background: #f5f5f5;
+      padding: 12px;
+      border-radius: 8px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    code {
+      background: #f2f2f2;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
   <h1>Rental QR test</h1>
-  <div id="status">Loading…</div>
+
+  <div id="status" class="status info">Waiting for QR…</div>
   <div id="warning"></div>
   <pre id="output"></pre>
 
@@ -22,8 +67,7 @@
     const outputEl = document.getElementById('output');
 
     // TEST ONLY.
-    // Должен совпадать с тем master key, которым шифровался QR.
-    // Пример: 32 байта в hex.
+    // Должен совпадать с ключом, которым шифруется QR на тестовом бэке.
     const MASTER_KEY_HEX = '00112233445566778899aabbccddeeff';
 
     const QR_VERSION = 1;
@@ -33,10 +77,26 @@
     const MINUTE_MS = 60 * 1000;
     const WARN_DIFF_MS = 60 * 60 * 1000;
 
+    function setStatus(text, cls = 'info') {
+      statusEl.textContent = text;
+      statusEl.className = `status ${cls}`;
+    }
+
+    function setWarning(text = '', cls = 'warn') {
+      warningEl.textContent = text;
+      warningEl.className = text ? cls : '';
+    }
+
+    function setOutput(value) {
+      outputEl.textContent =
+        typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    }
+
     function hexToBytes(hex) {
       if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
         throw new Error('Invalid hex key');
       }
+
       const out = new Uint8Array(hex.length / 2);
       for (let i = 0; i < out.length; i++) {
         out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -44,24 +104,66 @@
       return out;
     }
 
-    function base64UrlToBytes(s) {
-      const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
+    function normalizeBase64UrlInput(text) {
+      if (typeof text !== 'string') {
+        throw new Error('QR blob is not a string');
+      }
+
+      let s = text.trim();
+
+      // Убрать пробелы и переводы строк, если кто-то вставил криво
+      s = s.replace(/\s+/g, '');
+
+      return s;
+    }
+
+    function base64UrlToBytes(text) {
+      const s = normalizeBase64UrlInput(text);
+
+      if (!s) {
+        throw new Error('QR blob is empty');
+      }
+
+      if (!/^[A-Za-z0-9\-_]+$/.test(s)) {
+        throw new Error('QR blob contains invalid characters');
+      }
+
+      const b64 =
+        s.replace(/-/g, '+').replace(/_/g, '/')
         + '='.repeat((4 - (s.length % 4)) % 4);
+
       const bin = atob(b64);
       const out = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      for (let i = 0; i < bin.length; i++) {
+        out[i] = bin.charCodeAt(i);
+      }
       return out;
     }
 
     function getBlobFromLocation() {
       const url = new URL(window.location.href);
+
       const q = url.searchParams.get('q');
-      if (q) return q;
+      if (q && q.trim()) {
+        return q.trim();
+      }
 
       const parts = url.pathname.split('/').filter(Boolean);
-      if (parts.length) return parts[parts.length - 1];
+      if (!parts.length) {
+        return null;
+      }
 
-      throw new Error('QR blob not found in URL');
+      const last = parts[parts.length - 1];
+
+      // Если открыли просто страницу сайта, а не blob-path
+      if (
+        last === 'test-page' ||
+        last === 'index.html'
+      ) {
+        return null;
+      }
+
+      return last;
     }
 
     function unpackContainer(bytes) {
@@ -70,6 +172,7 @@
       }
 
       let offset = 0;
+
       const version = bytes[offset++];
       const serialLen = bytes[offset++];
 
@@ -81,6 +184,7 @@
       offset += serialLen;
 
       const serial = new TextDecoder().decode(serialBytes);
+
       const iv = bytes.slice(offset, offset + IV_LENGTH);
       offset += IV_LENGTH;
 
@@ -89,7 +193,14 @@
 
       const ciphertext = bytes.slice(offset);
 
-      return { version, serial, serialBytes, iv, tag, ciphertext };
+      return {
+        version,
+        serial,
+        serialBytes,
+        iv,
+        tag,
+        ciphertext,
+      };
     }
 
     function buildAad(version, serialBytes) {
@@ -102,6 +213,7 @@
 
     async function deriveQrKey(masterKeyBytes, serial) {
       const enc = new TextEncoder();
+
       const hmacKey = await crypto.subtle.importKey(
         'raw',
         masterKeyBytes,
@@ -112,11 +224,15 @@
 
       const prefix = enc.encode('rental-qr:v1\0');
       const serialBytes = enc.encode(serial);
+
       const data = new Uint8Array(prefix.length + serialBytes.length);
       data.set(prefix, 0);
       data.set(serialBytes, prefix.length);
 
-      const digest = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, data));
+      const digest = new Uint8Array(
+        await crypto.subtle.sign('HMAC', hmacKey, data)
+      );
+
       const aesKeyBytes = digest.slice(0, 32);
 
       return crypto.subtle.importKey(
@@ -130,10 +246,13 @@
 
     function unpackPayload(buf) {
       if (buf.byteLength !== PAYLOAD_LENGTH_V1) {
-        throw new Error(`Invalid payload length: ${buf.byteLength}`);
+        throw new Error(
+          `Invalid payload length: expected ${PAYLOAD_LENGTH_V1}, got ${buf.byteLength}`
+        );
       }
 
       const dv = new DataView(buf);
+
       const seq = dv.getUint32(0, false);
       const walltimeMin = dv.getUint32(4, false);
       const shiftMin = dv.getInt32(8, false);
@@ -162,8 +281,25 @@
       });
     }
 
-    async function main() {
-      const blobText = getBlobFromLocation();
+    function formatShift(ms) {
+      const value = Number(ms || 0);
+      const abs = Math.abs(value);
+      const sign = value > 0 ? '+' : '-';
+
+      if (abs === 0) return '0 min';
+
+      if (abs < 60 * MINUTE_MS) {
+        return `${sign}${Math.round(abs / MINUTE_MS)} min`;
+      }
+
+      if (abs < 2 * 24 * 60 * MINUTE_MS) {
+        return `${sign}${Math.round(abs / (60 * MINUTE_MS))} hour(s)`;
+      }
+
+      return `${sign}${Math.round(abs / (24 * 60 * MINUTE_MS))} day(s)`;
+    }
+
+    async function decodeQrBlob(blobText) {
       const blob = base64UrlToBytes(blobText);
       const { version, serial, serialBytes, iv, tag, ciphertext } = unpackContainer(blob);
 
@@ -175,7 +311,7 @@
       const aesKey = await deriveQrKey(masterKeyBytes, serial);
       const aad = buildAad(version, serialBytes);
 
-      // WebCrypto AES-GCM expects ciphertext || tag
+      // WebCrypto expects ciphertext || tag
       const encrypted = new Uint8Array(ciphertext.length + tag.length);
       encrypted.set(ciphertext, 0);
       encrypted.set(tag, ciphertext.length);
@@ -193,38 +329,78 @@
 
       const payload = unpackPayload(plaintext);
 
-      const nowMs = Date.now();
-      const diffMs = Math.abs(nowMs - payload.walltimeMs);
-
-      statusEl.textContent = 'QR decrypted and authenticated successfully';
-
-      if (diffMs > WARN_DIFF_MS) {
-        warningEl.className = 'warn';
-        warningEl.textContent =
-          `Warning: device time differs from local browser time by more than 1 hour `
-          + `(${Math.round(diffMs / 60000)} min).`;
-      }
-
-      outputEl.textContent = JSON.stringify({
+      return {
         version,
         serial,
-        payload: {
-          ...payload,
-          walltimeLocal: formatDateTime(payload.walltimeMs),
-        },
-        browserNowMs: nowMs,
-        browserNowLocal: formatDateTime(nowMs),
-        diffMin: Math.round(diffMs / 60000),
-      }, null, 2);
+        payload,
+      };
     }
 
-    main().catch((err) => {
-      statusEl.textContent = 'Failed';
-      warningEl.className = 'warn';
-      warningEl.textContent = err?.message || String(err);
-      outputEl.textContent = err?.stack || '';
-      console.error(err);
-    });
+    async function main() {
+      const blobText = getBlobFromLocation();
+
+      if (!blobText) {
+        setStatus('No QR data in URL', 'info');
+        setWarning('');
+        setOutput(
+`Open this page with QR data in URL.
+
+Examples:
+- ?q=<blob>
+- /<blob>
+
+Current URL:
+${window.location.href}`
+        );
+        return;
+      }
+
+      try {
+        const decoded = await decodeQrBlob(blobText);
+        const nowMs = Date.now();
+        const diffMs = Math.abs(nowMs - decoded.payload.walltimeMs);
+
+        setStatus('QR decrypted and authenticated successfully', 'ok');
+
+        if (diffMs > WARN_DIFF_MS) {
+          setWarning(
+            `Warning: device wall time differs from browser time by more than 1 hour (${Math.round(diffMs / MINUTE_MS)} min).`,
+            'warn'
+          );
+        } else {
+          setWarning('', '');
+        }
+
+        setOutput({
+          version: decoded.version,
+          serial: decoded.serial,
+          payload: {
+            seq: decoded.payload.seq,
+            walltimeMin: decoded.payload.walltimeMin,
+            walltimeLocal: formatDateTime(decoded.payload.walltimeMs),
+            shiftMin: decoded.payload.shiftMin,
+            shiftDisplay: formatShift(decoded.payload.shiftMs),
+            anomalyCount: decoded.payload.anomalyCount,
+          },
+          browserNowMs: nowMs,
+          browserNowLocal: formatDateTime(nowMs),
+          diffMin: Math.round(diffMs / MINUTE_MS),
+        });
+      } catch (err) {
+        setStatus('QR is invalid or cannot be decrypted', 'warn');
+        setWarning(err?.message || String(err), 'warn');
+        setOutput(
+`Input:
+${blobText}
+
+Error:
+${err?.stack || err?.message || String(err)}`
+        );
+        console.error(err);
+      }
+    }
+
+    main();
   </script>
 </body>
 </html>
